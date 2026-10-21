@@ -117,14 +117,19 @@ html.emc-on #emc-root{display:block;}
 #emc-dpad{position:absolute;left:max(18px,env(safe-area-inset-left));bottom:max(18px,env(safe-area-inset-bottom));width:204px;height:204px;pointer-events:auto;}
 #emc-dpad .emc-btn{width:68px;height:68px;pointer-events:none;}
 #emc-dpad .u{left:68px;top:0}#emc-dpad .l{left:0;top:68px}#emc-dpad .r{left:136px;top:68px}#emc-dpad .d{left:68px;top:136px}
-#emc-dpad .c{left:76px;top:76px;width:52px;height:52px;font-size:16px;opacity:.7}
+#emc-dpad .c{left:72px;top:72px;width:60px;height:60px;font-size:22px;}
 /* right cluster */
 .emc-r{right:max(18px,env(safe-area-inset-right));}
 #emc-jump{width:84px;height:84px;bottom:max(22px,env(safe-area-inset-bottom));border-radius:50%!important;font-size:30px;}
-#emc-sneak{width:64px;height:64px;bottom:max(32px,env(safe-area-inset-bottom));right:calc(max(18px,env(safe-area-inset-right)) + 100px)!important;font-size:24px;}
-#emc-use{width:70px;height:70px;bottom:126px;}
-#emc-attack{width:70px;height:70px;bottom:126px;right:calc(max(18px,env(safe-area-inset-right)) + 86px)!important;}
-#emc-sprint{width:64px;height:64px;bottom:214px;font-size:24px;}
+/* hold-to-break circle */
+#emc-ring{position:absolute;width:76px;height:76px;margin:-38px 0 0 -38px;border-radius:50%;pointer-events:none;display:none;
+  --p:0%;background:conic-gradient(rgba(255,255,255,.85) var(--p), rgba(255,255,255,.18) 0);
+  -webkit-mask:radial-gradient(circle, transparent 27px, #000 28px);mask:radial-gradient(circle, transparent 27px, #000 28px);}
+#emc-ring.charging{display:block;animation:emc-fill var(--hold,380ms) linear forwards;}
+#emc-ring.breaking{display:block;--p:100%;animation:emc-pulse .5s ease-in-out infinite alternate;}
+@property --p{syntax:"<percentage>";inherits:false;initial-value:0%;}
+@keyframes emc-fill{from{--p:0%}to{--p:100%}}
+@keyframes emc-pulse{from{transform:scale(1);opacity:1}to{transform:scale(.82);opacity:.6}}
 /* top bars */
 .emc-bar{position:absolute;top:max(8px,env(safe-area-inset-top));left:50%;transform:translateX(-50%);display:flex;gap:8px;pointer-events:none;}
 #emc-root .emc-bar .emc-btn{position:relative;width:52px;height:46px;font-size:20px;}
@@ -135,9 +140,7 @@ html.emc-on #emc-root{display:block;}
 #emc-kbd{position:fixed;left:0;top:0;width:1px;height:1px;opacity:0;border:0;padding:0;font-size:16px;z-index:-1;pointer-events:none;}
 @media (max-height:500px){ /* phones in landscape */
   #emc-dpad{transform:scale(.78);transform-origin:left bottom;}
-  #emc-jump{width:70px;height:70px}#emc-use,#emc-attack{width:58px;height:58px;bottom:100px}
-  #emc-attack{right:calc(max(18px,env(safe-area-inset-right)) + 72px)!important}#emc-sprint{bottom:170px;width:54px;height:54px}
-  #emc-sneak{right:calc(max(18px,env(safe-area-inset-right)) + 84px)!important;width:56px;height:56px}
+  #emc-jump{width:70px;height:70px}
   #emc-root .emc-bar .emc-btn{width:44px;height:38px;font-size:17px}
 }
 </style>
@@ -189,7 +192,14 @@ function unlockAudio(){
 /* ---------- synthetic input helpers ---------- */
 function def(o, k, v){ try{ Object.defineProperty(o, k, { configurable:true, get:function(){ return v; } }); }catch(e){} }
 function canvas(){ var c = document.querySelector("#game_frame canvas"); return c || null; }
+var KEYNAMES = { 8:"Backspace", 9:"Tab", 13:"Enter", 16:"Shift", 17:"Control", 27:"Escape", 32:" ", 37:"ArrowLeft", 38:"ArrowUp", 39:"ArrowRight", 40:"ArrowDown", 116:"F5" };
+function keyName(which){
+  if(KEYNAMES[which]) return KEYNAMES[which];
+  if((which >= 65 && which <= 90) || (which >= 48 && which <= 57)) return String.fromCharCode(which).toLowerCase();
+  return "Unidentified";
+}
 function keyEv(type, which, key){
+  if(!key) key = keyName(which); // the game crashes on an empty key name
   var e = new KeyboardEvent(type, { bubbles:true, cancelable:true, key:key || "", repeat:false });
   def(e, "which", which); def(e, "keyCode", which); def(e, "charCode", type === "keypress" && key && key.length === 1 ? key.charCodeAt(0) : 0);
   window.dispatchEvent(e);
@@ -220,8 +230,8 @@ function wheel(dy, x, y){
 function releaseAll(){
   for(var k in held) keyUp(+k);
   for(var b in mouseHeld) mUp(+b);
-  sneakOn = false; sprintOn = false;
-  if(ui){ ui.sneak.classList.remove("on"); ui.sprint.classList.remove("on"); }
+  sneakOn = false;
+  if(ui){ ui.sneak.classList.remove("on"); hideRing(); }
   setDpad(0, 0);
 }
 
@@ -237,7 +247,7 @@ function codeForChar(ch){
 }
 
 /* ---------- UI ---------- */
-var ui = null, sneakOn = false, sprintOn = false, rclickNext = false, sens = 1.7;
+var ui = null, sneakOn = false, rclickNext = false, sens = 1.7;
 try{ var sv = parseFloat(localStorage.getItem("emc.sens")); if(sv > 0) sens = sv; }catch(e){}
 
 function el(tag, attrs, html, parent){
@@ -258,13 +268,11 @@ function build(){
   var dl = el("div", { "class":"emc-btn l" }, "&#9664;", dpad);
   var dr = el("div", { "class":"emc-btn r" }, "&#9654;", dpad);
   var dd = el("div", { "class":"emc-btn d" }, "&#9660;", dpad);
-  el("div", { "class":"emc-btn c" }, "&#9679;", dpad);
+  var sneak = el("div", { "class":"emc-btn c", "data-act":"sneak" }, "&#8681;", dpad);
 
   var jump   = el("div", { id:"emc-jump",   "class":"emc-btn emc-r", "data-hold":K.SPACE }, "&#8679;", game);
-  var sneak  = el("div", { id:"emc-sneak",  "class":"emc-btn", "data-act":"sneak" }, "&#8681;", game);
-  var use    = el("div", { id:"emc-use",    "class":"emc-btn emc-r", "data-mouse":"2" }, "&#9995;", game);
-  var attack = el("div", { id:"emc-attack", "class":"emc-btn", "data-mouse":"0" }, "&#9935;", game);
-  var sprint = el("div", { id:"emc-sprint", "class":"emc-btn emc-r", "data-act":"sprint" }, "&#187;", game);
+  var ring = el("div", { id:"emc-ring" }, null, game);
+  ring.style.setProperty("--hold", HOLD_MS + "ms");
 
   var bar = el("div", { "class":"emc-bar" }, null, game);
   el("div", { "class":"emc-btn", "data-tap":K.ESC }, "&#10074;&#10074;", bar);          // pause
@@ -284,7 +292,7 @@ function build(){
   var kbd = el("input", { id:"emc-kbd", type:"text", autocomplete:"off", autocorrect:"off", autocapitalize:"off", spellcheck:"false", enterkeyhint:"send" }, null, document.body);
   kbd.value = "  ";
 
-  ui = { root:root, dpad:dpad, du:du, dl:dl, dr:dr, dd:dd, sneak:sneak, sprint:sprint, rbtn:rbtn, kbd:kbd };
+  ui = { root:root, ring:ring, dpad:dpad, du:du, dl:dl, dr:dr, dd:dd, sneak:sneak, rbtn:rbtn, kbd:kbd };
   setupKeyboard(kbd);
   updateMode();
 }
@@ -356,13 +364,22 @@ function onStart(ev){
     var tgt = t.target && t.target.closest ? t.target.closest(".emc-btn,#emc-dpad") : null;
     var rec = { kind:"look", sx:t.clientX, sy:t.clientY, x:t.clientX, y:t.clientY, t0:ev.timeStamp, moved:0, el:tgt };
     touches[t.identifier] = rec;
-    if(tgt && tgt.id === "emc-dpad"){ rec.kind = "dpad"; dpadFromTouch(t); continue; }
+    if(tgt && tgt.id === "emc-dpad"){
+      var dr = ui.dpad.getBoundingClientRect();
+      if(Math.abs(t.clientX - (dr.left + dr.width/2)) < dr.width * 0.16 && Math.abs(t.clientY - (dr.top + dr.height/2)) < dr.height * 0.16){
+        rec.kind = "btn"; rec.el = ui.sneak; btnDown(ui.sneak, rec); continue; // centre = sneak toggle
+      }
+      rec.kind = "dpad"; dpadFromTouch(t); continue;
+    }
     if(tgt){ rec.kind = "btn"; btnDown(tgt, rec); continue; }
     if(locked){
       var hs = hotbarSlot(t.clientX, t.clientY);
       if(hs >= 0){ rec.kind = "hotbar"; tapKey(49 + hs, String(hs + 1)); continue; }
       rec.kind = "look";
-      rec.timer = setTimeout(function(r){ return function(){ if(r.kind === "look" && r.moved < MOVE_TOL){ r.breaking = true; mDown(0); } }; }(rec), HOLD_MS);
+      if(!ringOwner){ ringOwner = rec; showRing(t.clientX, t.clientY, "charging"); }
+      rec.timer = setTimeout(function(r){ return function(){
+        if(r.kind === "look" && r.moved < MOVE_TOL){ r.breaking = true; mDown(0); if(ringOwner === r) showRing(r.x, r.y, "breaking"); }
+      }; }(rec), HOLD_MS);
     }else{
       // GUI / menus: behave like a mouse. Two fingers = scroll.
       var guiCount = 0; for(var id in touches) if(touches[id].kind === "gui") guiCount++;
@@ -389,7 +406,10 @@ function onMove(ev){
     rec.moved = Math.max(rec.moved, Math.abs(t.clientX - rec.sx) + Math.abs(t.clientY - rec.sy));
     rec.x = t.clientX; rec.y = t.clientY;
     if(rec.kind === "dpad"){ dpadFromTouch(t); }
-    else if(rec.kind === "look" && locked){ mouseEv("mousemove", null, null, 0, dx * sens, dy * sens); }
+    else if(rec.kind === "look" && locked){
+      mouseEv("mousemove", null, null, 0, dx * sens, dy * sens);
+      if(ringOwner === rec){ if(rec.breaking) moveRing(t.clientX, t.clientY); else if(rec.moved >= MOVE_TOL){ hideRing(); } }
+    }
     else if(rec.kind === "gui"){ mouseEv("mousemove", t.clientX, t.clientY, 0, dx, dy); }
     else if(rec.kind === "scroll"){
       rec.acc = (rec.acc || 0) + dy;
@@ -406,6 +426,7 @@ function onEnd(ev){
     if(!rec) continue;
     delete touches[t.identifier];
     if(rec.timer) clearTimeout(rec.timer);
+    if(ringOwner === rec) hideRing();
     if(rec.kind === "dpad"){
       var still = false; for(var id in touches) if(touches[id].kind === "dpad") still = true;
       if(!still) setDpad(0, 0);
@@ -420,6 +441,17 @@ function onEnd(ev){
   }
 }
 
+/* ---------- hold-to-break circle ---------- */
+var ringOwner = null;
+function moveRing(x, y){ ui.ring.style.left = x + "px"; ui.ring.style.top = y + "px"; }
+function showRing(x, y, cls){
+  moveRing(x, y);
+  ui.ring.className = "";
+  void ui.ring.offsetWidth; // restart the fill animation
+  ui.ring.className = cls;
+}
+function hideRing(){ ringOwner = null; if(ui && ui.ring) ui.ring.className = ""; }
+
 /* ---------- buttons ---------- */
 function btnDown(b, rec){
   b.classList.add("down");
@@ -428,7 +460,6 @@ function btnDown(b, rec){
   else if(m){ mDown(+m); }
   else if(tp){ tapKey(+tp); }
   else if(act === "sneak"){ sneakOn = !sneakOn; b.classList.toggle("on", sneakOn); if(sneakOn) keyDown(K.SHIFT); else keyUp(K.SHIFT); }
-  else if(act === "sprint"){ sprintOn = !sprintOn; b.classList.toggle("on", sprintOn); if(sprintOn) keyDown(K.CTRL); else keyUp(K.CTRL); }
   else if(act === "chat"){ tapKey(K.T, "t"); focusKbd(); }
   else if(act === "kbd"){ if(document.activeElement === ui.kbd) ui.kbd.blur(); else focusKbd(); }
   else if(act === "rclick"){ rclickNext = !rclickNext; b.classList.toggle("on", rclickNext); }
